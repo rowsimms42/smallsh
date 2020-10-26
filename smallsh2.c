@@ -93,36 +93,42 @@ void parse_input(char *line, int length) {
     args[index] = NULL;
 
     spawnpid = fork();
-    if (spawnpid == 0) {
-        if (arg_struct->out == true) { //*output file exists*/
-            int d_fd;
-            if ((d_fd = creat(arg_struct->output , 0644)) < 0) {
-                perror("couldn't open output file");
-                free(args);
-                free(line);
-                exit(1);
+    switch (spawnpid) {
+        case 0:
+            if (arg_struct->out == true) { //*output file exists*/
+                int d_fd;
+                if ((d_fd = creat(arg_struct->output, 0644)) < 0) {
+                    perror("Couldn't open output file - ");
+                    free(args);
+                    free(line);
+                    exit(1);
+                }
+                dup2(d_fd, STDOUT_FILENO);
+                close(d_fd);
             }
-            dup2(d_fd, STDOUT_FILENO);
-            close(d_fd);
-        }
-        if (arg_struct->in == true) {
-            int s_fd;
-            if ((s_fd = open(arg_struct->input, O_RDONLY, 0)) < 0) {
-                perror("couldn't open input file");
-                free(args);
-                free(line);
-                exit(1);
+            if (arg_struct->in == true) {
+                int s_fd;
+                if ((s_fd = open(arg_struct->input, O_RDONLY, 0)) < 0) {
+                    perror("Couldn't open input file - ");
+                    free(args);
+                    free(line);
+                    exit(1);
+                }
+                dup2(s_fd, STDIN_FILENO);
+                close(s_fd);
             }
-            dup2(s_fd, STDIN_FILENO);
-            close(s_fd);
-        }
-        execvp(command, args);
-        perror("execvp");
-        free(args);
-        free(line);
-        exit(1);
-    } else {
-        waitpid(spawnpid, &status, 0);
+            execvp(command, args);
+            perror("execvp");
+            free(args);
+            free(line);
+            exit(1);
+        case -1:
+            perror("fork()");
+            status = 1;
+            break;
+        default:
+            waitpid(spawnpid, &status, 0);
+            break;
     }
 
     freemem:
@@ -130,7 +136,7 @@ void parse_input(char *line, int length) {
     free(arg_struct);
 }
 
-void loop() {
+int main() {
     char *buffer = NULL;
     size_t max = 0;
     size_t buffer_length;
@@ -141,9 +147,5 @@ void loop() {
         parse_input(buffer, buffer_length);
         fflush(stdout);
     }
-}
-
-int main() {
-    loop();
     return 0;
 }
