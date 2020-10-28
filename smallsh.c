@@ -52,28 +52,43 @@ char* expand(char** ptr){
         }
         i++;
     }
-    char **ret_str = (char**)malloc((len*i) * sizeof(char*));
-    ret_str[0] = str;
-    return *ret_str;
+    strncat(str, "\0", 1);
+    char* ret_str = (char*)malloc(sizeof(str) * sizeof(char*));
+    strcpy(ret_str, str);
+    return ret_str;
 }
 
-void arg_expansion(char **arg, int length) {
+int arg_expansion(char **arg, int length) {
     char* substring = "$$";
     char* n = NULL;
     int i;
     char* new = NULL;
+    char* ptr[length];
+    int counter = 0;
 
     for (i = 0; arg[i]!=NULL; i++) {
         n = strstr(arg[i], substring);
         if (n != NULL) {
             new = expand(&arg[i]);
-            arg[i] = new;
+            ptr[i] = strdup(new);
+            counter++;
+        }
+        else{
+            new = arg[i];
+            ptr[i] = strdup(new);
         }
     }
-    for (int i = 0; arg[i] != NULL; i++) {
-        printf("%s ", arg[i]);
+    int ret_value = 0;
+
+    for (int j = 0; j<i; j++){
+        printf("%s ", ptr[j]);
     }
-    printf("\n");
+    if (counter > 0) {
+        printf("\n");
+        fflush(stdout);
+        ret_value = 1;
+    }
+    return ret_value;
 }
 
 void return_status(int wstatus) {
@@ -167,8 +182,9 @@ void parse_input(char *line, int length) {
     if (*(args[0]) == '#'){
         goto freemem;
     }
-    arg_expansion(args, length);
-
+    int result = arg_expansion(args, length);
+    if (result == 1){goto freemem;}
+    fflush(stdout);
 
     spawnpid = fork();
     switch (spawnpid) {
