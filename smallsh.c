@@ -58,7 +58,7 @@ char* expand(char** ptr){
     return ret_str;
 }
 
-int arg_expansion(char **arg, int length) {
+void arg_expansion(char **arg, int length) {
     char* substring = "$$";
     char* n = NULL;
     int i;
@@ -78,17 +78,14 @@ int arg_expansion(char **arg, int length) {
             ptr[i] = strdup(new);
         }
     }
-    int ret_value = 0;
-
     for (int j = 0; j<i; j++){
         printf("%s ", ptr[j]);
     }
-    if (counter > 0) {
-        printf("\n");
-        fflush(stdout);
-        ret_value = 1;
+    printf("\n");
+    fflush(stdout);
+    for (int l = 0; l<i; l++){
+        arg[l] = ptr[l];
     }
-    return ret_value;
 }
 
 void return_status(int wstatus) {
@@ -115,6 +112,8 @@ void parse_input(char *line, int length) {
     pid_t spawnpid;
 
     command = strtok_r(line, delimiters, &save_ptr);
+    args[0] = command;
+
     if (command == NULL) {goto freemem;}
     else if ((strcmp(command, "#") == 0)) {goto end;}
     else if ((strcmp(command, "status") == 0)) {
@@ -125,7 +124,6 @@ void parse_input(char *line, int length) {
         exit(0);
         goto freemem;
     }
-    args[0] = command;
 
     if (strcmp(command, "cd") == 0) {
         token = strtok_r(NULL, delimiters, &save_ptr);
@@ -182,8 +180,7 @@ void parse_input(char *line, int length) {
     if (*(args[0]) == '#'){
         goto freemem;
     }
-    int result = arg_expansion(args, length);
-    if (result == 1){goto freemem;}
+    arg_expansion(args, length);
     fflush(stdout);
 
     spawnpid = fork();
@@ -226,7 +223,6 @@ void parse_input(char *line, int length) {
             waitpid(spawnpid, &status, 0);
             break;
     }
-
     freemem:
     free(args);
     free(arg_struct);
