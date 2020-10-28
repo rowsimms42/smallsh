@@ -26,12 +26,54 @@ struct arguments {
 
 int status = 0; /*global status variable*/
 
-void print_args(char **arr) {
-    for (int i = 0; arr[i] != NULL; i++) {
-        printf("%s, ", arr[i]);
+char* expand(char** ptr){
+    int i = 0;
+    int pid = getpid();
+    int len = sizeof(pid);
+    char str[64];
+    str[0] = 0;
+    char p_str[len+2];
+    sprintf(p_str, "%d", pid);
+    len = len+2;
+    char s = '$';
+
+    while (((*ptr)[i]) !=0) {
+        char c = (*ptr)[i];
+        if (c == s) {
+            char d = (*ptr)[i + 1];
+            if (d == s) {
+                strncat(str, p_str, len);
+                i++;
+            } else {
+                strncat(str, &c, 1);
+            }
+        } else {
+            strncat(str, &c, 1);
+        }
+        i++;
+    }
+    char **ret_str = (char**)malloc((len*i) * sizeof(char*));
+    ret_str[0] = str;
+    return *ret_str;
+}
+
+void arg_expansion(char **arg, int length) {
+    char* substring = "$$";
+    char* n = NULL;
+    int i;
+    char* new = NULL;
+
+    for (i = 0; arg[i]!=NULL; i++) {
+        n = strstr(arg[i], substring);
+        if (n != NULL) {
+            new = expand(&arg[i]);
+            arg[i] = new;
+        }
+    }
+    for (int i = 0; arg[i] != NULL; i++) {
+        printf("%s ", arg[i]);
     }
     printf("\n");
-
 }
 
 void return_status(int wstatus) {
@@ -40,34 +82,6 @@ void return_status(int wstatus) {
     } else{
         printf("terminated by signal: %d\n", wstatus);
     }
-}
-
-void eliminate_char(char *line, int length) {
-    if (length > 1){
-        memmove(line, line, length-2);
-        line[length-2] = 0;
-    }
-}
-
-int check_background(char *line, int length) {
-    char delimiters[] = " ";
-    char* save_ptr = NULL;
-    char* symbol = "&\n";
-    int ret = 0;
-    char* token = NULL;
-    char *temp = malloc(sizeof(line));
-    strcpy(temp, line);
-
-    token = strtok_r(temp, delimiters, &save_ptr);
-    while (token!=NULL) {
-        if (strcmp(token, symbol) == 0) {
-            ret = 1;
-            eliminate_char(line, length);
-        }
-        token = strtok_r(NULL, delimiters, &save_ptr);
-    }
-    free(temp);
-    return ret;
 }
 
 void parse_input(char *line, int length) {
@@ -80,12 +94,10 @@ void parse_input(char *line, int length) {
     char *save_ptr = NULL;
     arg_struct->in = false;
     arg_struct->out = false;
-    //arg_struct->background = false;
+    arg_struct->background = false;
     char* curr = NULL;
     int index = 1;
     pid_t spawnpid;
-
-    //if (background == 1){arg_struct->background = true;}
 
     command = strtok_r(line, delimiters, &save_ptr);
     if (command == NULL) {goto freemem;}
@@ -98,7 +110,6 @@ void parse_input(char *line, int length) {
         exit(0);
         goto freemem;
     }
-
     args[0] = command;
 
     if (strcmp(command, "cd") == 0) {
@@ -148,12 +159,16 @@ void parse_input(char *line, int length) {
     } while (token!=NULL);
     args[index] = NULL;
 
-
-    //if (background == 1){arg_struct->background = true;}
-    if (*(args[0]) == '#'){
-        //printf("end\n");
-        goto end;
+    if (strcmp(args[index-1],"&") == 0){
+        arg_struct->background = true;
+        args[index-1] = NULL;
     }
+
+    if (*(args[0]) == '#'){
+        goto freemem;
+    }
+    arg_expansion(args, length);
+
 
     spawnpid = fork();
     switch (spawnpid) {
@@ -197,11 +212,11 @@ void parse_input(char *line, int length) {
     }
 
     freemem:
-        free(args);
-        free(arg_struct);
+    free(args);
+    free(arg_struct);
     end:
-        //print_args(args);
-        fflush(stdout);
+    //print_args(args);
+    fflush(stdout);
 }
 
 int main() {
@@ -214,7 +229,6 @@ int main() {
         printf(":");
         fflush(stdout);
         buffer_length = getline(&buffer, &max, stdin);
-        //background = check_background(buffer, buffer_length);
         parse_input(buffer, buffer_length);
         fflush(stdout);
     }
