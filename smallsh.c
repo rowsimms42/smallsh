@@ -17,14 +17,20 @@
 #include <signal.h>
 
 struct arguments {
-    char input[64];
-    char output[64];
+    char* input;
+    char* output;
     bool in;
     bool out;
     bool background;
 };
-int allowBackground = 0;
 
+struct linked_spawns{
+    pid_t spawn;
+    struct linked_spawns *next;
+
+};
+
+int background = 0;
 int status = 0; /*global status variable*/
 
 void return_status(int wstatus) {
@@ -34,22 +40,24 @@ void return_status(int wstatus) {
         printf("terminated by signal: %d\n", wstatus);
     }
 }
-/*
+
 void catchSIGTSTP(int signo) {
-    if (allowBackground == 1) {
+    if (background == 1) {
         char* message = "Entering foreground-only mode (& is now ignored)\n";
         write(1, message, 49);
+        //STDOUT_FILENO
         fflush(stdout);
-        allowBackground = 0;
+        background = 0;
     }
     else {
         char* message = "Exiting foreground-only mode\n";
         write (1, message, 29);
+        //STDOUT_FILENO
         fflush(stdout);
-        allowBackground = 1;
+        background = 1;
     }
 }
-*/
+
 /* gcc --std=gnu99 -o smallsh smallsh.c */
 
 void parse_input(char *line, int length) {
@@ -66,6 +74,7 @@ void parse_input(char *line, int length) {
     char* curr = NULL;
     int index = 1;
     pid_t spawnpid;
+    char devnull[] = "/dev/null";
 
     struct sigaction action = {0};
 
@@ -115,6 +124,7 @@ void parse_input(char *line, int length) {
         if (strcmp(token, "<") == 0){
             token = strtok_r(NULL, delimiters, &save_ptr);
             if (token!=NULL){
+                arg_struct->input = calloc(strlen(token) + 1, sizeof(char));
                 strcpy(arg_struct->input, token);
                 arg_struct->in = true;
                 token = strtok_r(NULL, delimiters, &save_ptr);
@@ -129,6 +139,7 @@ void parse_input(char *line, int length) {
         if (strcmp(token, ">") == 0){
             token = strtok_r(NULL, delimiters, &save_ptr);
             if (token!=NULL){
+                arg_struct->output = calloc(strlen(token) + 1, sizeof(char));
                 strcpy(arg_struct->output, token);
                 arg_struct->out = true;
                 token = strtok_r(NULL, delimiters, &save_ptr);
@@ -148,6 +159,14 @@ void parse_input(char *line, int length) {
     if (strcmp(args[index-1],"&") == 0){
         arg_struct->background = true;
         args[index-1] = NULL;
+    }
+    if (arg_struct->background == true && arg_struct->in == false){
+        arg_struct->input = calloc(strlen(devnull) + 1, sizeof(char));
+        strcpy(arg_struct->input, devnull);
+    }
+    else if (arg_struct->background == true && arg_struct->out == false) {
+        arg_struct->output = calloc(strlen(devnull) + 1, sizeof(char));
+        strcpy(arg_struct->output, devnull);
     }
 
     if (*(args[0]) == '#'){
@@ -190,9 +209,19 @@ void parse_input(char *line, int length) {
             status = 1;
             break;
         default:
-            waitpid(spawnpid, &status, 0);
-            break;
+            if (arg_struct->background == false) {
+                waitpid(spawnpid, &status, 0);
+            } else {
+                printf("Background pid is %i\n", spawnpid);
+                break;
+            }
     }
+    while ((spawnpid = waitpid(-1, &status, WNOHANG)) > 0) {
+        printf("child %d terminated - ", spawnpid);
+        return_status(status);
+        fflush(stdout);
+    }
+
     freemem:
     free(args);
     free(arg_struct);
