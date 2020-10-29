@@ -14,7 +14,7 @@
 #include <sys/types.h>
 #include <stdbool.h>
 #include <fcntl.h>
-/* gcc --std=gnu99 -o smallsh smallsh.c */
+#include <signal.h>
 
 struct arguments {
     char input[64];
@@ -23,70 +23,9 @@ struct arguments {
     bool out;
     bool background;
 };
+int allowBackground = 0;
 
 int status = 0; /*global status variable*/
-
-char* expand(char** ptr){
-    int i = 0;
-    int pid = getpid();
-    int len = sizeof(pid);
-    char str[64];
-    str[0] = 0;
-    char p_str[len+2];
-    sprintf(p_str, "%d", pid);
-    len = len+2;
-    char s = '$';
-
-    while (((*ptr)[i]) !=0) {
-        char c = (*ptr)[i];
-        if (c == s) {
-            char d = (*ptr)[i + 1];
-            if (d == s) {
-                strncat(str, p_str, len);
-                i++;
-            } else {
-                strncat(str, &c, 1);
-            }
-        } else {
-            strncat(str, &c, 1);
-        }
-        i++;
-    }
-    strncat(str, "\0", 1);
-    char* ret_str = (char*)malloc(sizeof(str) * sizeof(char*));
-    strcpy(ret_str, str);
-    return ret_str;
-}
-
-void arg_expansion(char **arg, int length) {
-    char* substring = "$$";
-    char* n = NULL;
-    int i;
-    char* new = NULL;
-    char* ptr[length];
-    int counter = 0;
-
-    for (i = 0; arg[i]!=NULL; i++) {
-        n = strstr(arg[i], substring);
-        if (n != NULL) {
-            new = expand(&arg[i]);
-            ptr[i] = strdup(new);
-            counter++;
-        }
-        else{
-            new = arg[i];
-            ptr[i] = strdup(new);
-        }
-    }
-    for (int j = 0; j<i; j++){
-        printf("%s ", ptr[j]);
-    }
-    printf("\n");
-    fflush(stdout);
-    for (int l = 0; l<i; l++){
-        arg[l] = ptr[l];
-    }
-}
 
 void return_status(int wstatus) {
     if(WIFEXITED(wstatus)){
@@ -95,6 +34,23 @@ void return_status(int wstatus) {
         printf("terminated by signal: %d\n", wstatus);
     }
 }
+/*
+void catchSIGTSTP(int signo) {
+    if (allowBackground == 1) {
+        char* message = "Entering foreground-only mode (& is now ignored)\n";
+        write(1, message, 49);
+        fflush(stdout);
+        allowBackground = 0;
+    }
+    else {
+        char* message = "Exiting foreground-only mode\n";
+        write (1, message, 29);
+        fflush(stdout);
+        allowBackground = 1;
+    }
+}
+*/
+/* gcc --std=gnu99 -o smallsh smallsh.c */
 
 void parse_input(char *line, int length) {
     /*command [arg1 arg2 ...] [< input_file] [> output_file] [&]*/
@@ -110,21 +66,33 @@ void parse_input(char *line, int length) {
     char* curr = NULL;
     int index = 1;
     pid_t spawnpid;
+/*
+    struct sigaction action = {0};
 
+    // Redirect ^Z to catchSIGTSTP()
+    struct sigaction sa_sigtstp = {0};
+    sa_sigtstp.sa_handler = catchSIGTSTP;
+    sigfillset(&sa_sigtstp.sa_mask);
+    sa_sigtstp.sa_flags = 0;
+    sigaction(SIGTSTP, &sa_sigtstp, NULL);
+*/
     command = strtok_r(line, delimiters, &save_ptr);
-    args[0] = command;
 
-    if (command == NULL) {goto freemem;}
-    else if ((strcmp(command, "#") == 0)) {goto end;}
-    else if ((strcmp(command, "status") == 0)) {
+    if (command == NULL) {
+        goto freemem;
+    }
+    if ((strcmp(command, "#") == 0)) {
+        goto freemem;
+    }
+    if ((strcmp(command, "status") == 0)) {
         return_status(status);
         goto freemem;
     }
-    else if ((strcmp(command, "exit") == 0)) {
+    if ((strcmp(command, "exit") == 0)){
         exit(0);
-        goto freemem;
     }
 
+    args[0] = command;
     if (strcmp(command, "cd") == 0) {
         token = strtok_r(NULL, delimiters, &save_ptr);
         if (token == NULL) {
@@ -180,8 +148,6 @@ void parse_input(char *line, int length) {
     if (*(args[0]) == '#'){
         goto freemem;
     }
-    arg_expansion(args, length);
-    fflush(stdout);
 
     spawnpid = fork();
     switch (spawnpid) {
@@ -231,18 +197,56 @@ void parse_input(char *line, int length) {
     fflush(stdout);
 }
 
-int main() {
-    char *buffer;
-    size_t max = 0;
-    size_t buffer_length;
-    int background = 0;
+
+char* extract(char* str, int length){
+    char temp_str[length];
+    char p_str[length+2];
+    int pid = getpid();
+    sprintf(p_str, "%d", pid);
+    int len = sizeof(pid);
+    int i = 0;
+    char s = '$';
+    char* ret_str = NULL;
+
+    while (str[i] != 0) {
+        char c = str[i];
+        if (str[i] == '$') {
+            char d = str[i + 1];
+            if (d == s) {
+                strncat(temp_str, p_str, len);
+                i++;
+            } else {
+                strncat(temp_str, &c, 1);
+            }
+        } else {
+            strncat(temp_str, &c, 1);
+        }
+        i++;
+    }
+    strncat(temp_str, "\0", 1);
+    ret_str = (char*)malloc(sizeof(ret_str) * sizeof(char*));
+    strcpy(ret_str, temp_str);
+    str=NULL;
+    memset(&temp_str[0], 0, sizeof(temp_str));
+    return ret_str;
+}
+
+void loop() {
+    char buffer[500];
+    char* buffer_changed;
+    size_t buffer_length = 500;
     while (1){
-        buffer = NULL;
         printf(":");
         fflush(stdout);
-        buffer_length = getline(&buffer, &max, stdin);
-        parse_input(buffer, buffer_length);
+        fgets(buffer, 500, stdin);
+        buffer_changed = extract(buffer, buffer_length);
+        parse_input(buffer_changed, buffer_length);
         fflush(stdout);
+        buffer_changed = NULL;
     }
+}
+
+int main(){
+    loop();
     return 0;
 }
