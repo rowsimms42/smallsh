@@ -66,7 +66,7 @@ void parse_input(char *line, int length) {
     char* curr = NULL;
     int index = 1;
     pid_t spawnpid;
-/*
+
     struct sigaction action = {0};
 
     // Redirect ^Z to catchSIGTSTP()
@@ -75,7 +75,7 @@ void parse_input(char *line, int length) {
     sigfillset(&sa_sigtstp.sa_mask);
     sa_sigtstp.sa_flags = 0;
     sigaction(SIGTSTP, &sa_sigtstp, NULL);
-*/
+
     command = strtok_r(line, delimiters, &save_ptr);
 
     if (command == NULL) {
@@ -98,7 +98,12 @@ void parse_input(char *line, int length) {
         if (token == NULL) {
             chdir(getenv("HOME"));
         } else {
-            chdir(token);
+            int s = chdir(token);
+            if (s==-1){
+                printf("%s: Directory does not exist\n", token);
+                status = 1;
+                fflush(stdout);
+            }
         }
         goto freemem;
     }
@@ -176,11 +181,10 @@ void parse_input(char *line, int length) {
                 close(s_fd);
             }
             execvp(command, args);
-            perror("execvp");
+            perror(command);
             free(args);
             free(line);
             exit(1);
-            break;
         case -1:
             perror("fork()");
             status = 1;
@@ -192,11 +196,8 @@ void parse_input(char *line, int length) {
     freemem:
     free(args);
     free(arg_struct);
-    end:
-    //print_args(args);
     fflush(stdout);
 }
-
 
 char* extract(char* str, int length){
     char temp_str[length];
