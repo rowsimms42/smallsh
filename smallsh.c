@@ -24,14 +24,9 @@ struct arguments {
     bool background;
 };
 
-struct linked_spawns{
-    pid_t spawn;
-    struct linked_spawns *next;
-
-};
-
-int background = 0;
 int status = 0; /*global status variable*/
+int fg_mode = 1;
+
 
 void return_status(int wstatus) {
     if(WIFEXITED(wstatus)){
@@ -42,41 +37,65 @@ void return_status(int wstatus) {
 }
 
 void catchSIGTSTP(int signo) {
-    if (background == 1) {
-        char* message = "Entering foreground-only mode (& is now ignored)\n";
-        write(1, message, 49);
-        //STDOUT_FILENO
-        fflush(stdout);
-        background = 0;
+    if (fg_mode == 1) {
+        char* msg = "Entering foreground-only mode (& is now ignored)\n";
+        write(STDOUT_FILENO, msg, 49);
+        fg_mode = 0;
     }
     else {
-        char* message = "Exiting foreground-only mode\n";
-        write (1, message, 29);
-        //STDOUT_FILENO
-        fflush(stdout);
-        background = 1;
+        char* msg = "Exiting foreground-only mode\n";
+        write (STDOUT_FILENO, msg, 29);
+        fg_mode = 1;
     }
 }
 
-/* gcc --std=gnu99 -o smallsh smallsh.c */
+struct arguments* init_struct(){
+    struct arguments* curr_arg = malloc(sizeof(struct arguments));
+    curr_arg->in = false;
+    curr_arg->out = false;
+    curr_arg->background = false;
+    return curr_arg;
+}
+
+int change_directories(char** token){
+    int ret = 0;
+    if (*token == NULL) {
+        chdir(getenv("HOME"));
+    } else {
+        int s = chdir(*token);
+        if (s==-1){
+            printf("%s: Directory does not exist\n", *token);
+            //status = 1;
+            fflush(stdout);
+            ret = 1;
+        }
+    }
+    return ret;
+}
+
+int built_in_comm(char** command){
+    int ret = 0;
+    if ((strcmp(*command, "status") == 0)) {
+        return_status(status);
+        ret = 1;
+    }
+    else if ((strcmp(*command, "exit") == 0)){
+        ret = 2;
+    }
+    return ret;
+}
 
 void parse_input(char *line, int length) {
     /*command [arg1 arg2 ...] [< input_file] [> output_file] [&]*/
-    char **args = (char**)malloc(length * sizeof(char*));
-    struct arguments* arg_struct= ((struct arguments*)malloc(sizeof(struct arguments)));
+    char **args = (char **) malloc(length * sizeof(char *));
+    struct arguments *arg_struct = init_struct();
     const char *delimiters = " \n";
     char *command = NULL;
     char *token = NULL;
     char *save_ptr = NULL;
-    arg_struct->in = false;
-    arg_struct->out = false;
-    arg_struct->background = false;
-    char* curr = NULL;
     int index = 1;
     pid_t spawnpid;
     char devnull[] = "/dev/null";
-
-    struct sigaction action = {0};
 
     // Redirect ^Z to catchSIGTSTP()
     struct sigaction sa_sigtstp = {0};
@@ -87,89 +106,76 @@ void parse_input(char *line, int length) {
 
     command = strtok_r(line, delimiters, &save_ptr);
 
-    if (command == NULL) {
-        goto freemem;
-    }
+    int comm = built_in_comm(&command);
+    if (comm == 1){goto freemem;}
+    if (comm == 2){exit(0);}
+
     if ((strcmp(command, "#") == 0)) {
         goto freemem;
-    }
-    if ((strcmp(command, "status") == 0)) {
-        return_status(status);
-        goto freemem;
-    }
-    if ((strcmp(command, "exit") == 0)){
-        exit(0);
     }
 
     args[0] = command;
     if (strcmp(command, "cd") == 0) {
         token = strtok_r(NULL, delimiters, &save_ptr);
-        if (token == NULL) {
-            chdir(getenv("HOME"));
-        } else {
-            int s = chdir(token);
-            if (s==-1){
-                printf("%s: Directory does not exist\n", token);
-                status = 1;
-                fflush(stdout);
-            }
+        int ch_dir = change_directories(&token);
+        if (ch_dir == 1) {
+            status = 1;
         }
         goto freemem;
     }
     do {
         token = strtok_r(NULL, delimiters, &save_ptr);
-        if (token == NULL){
+        if (token == NULL) {
             break;
         }
-        if (strcmp(token, "<") == 0){
+        if (strcmp(token, "<") == 0) {
             token = strtok_r(NULL, delimiters, &save_ptr);
-            if (token!=NULL){
+            if (token != NULL) {
                 arg_struct->input = calloc(strlen(token) + 1, sizeof(char));
                 strcpy(arg_struct->input, token);
                 arg_struct->in = true;
                 token = strtok_r(NULL, delimiters, &save_ptr);
-                if (token ==  NULL){
+                if (token == NULL) {
                     break;
                 }
-            }else {
+            } else {
                 printf("no file provided\n");
                 goto freemem;
             }
         }
-        if (strcmp(token, ">") == 0){
+        if (strcmp(token, ">") == 0) {
             token = strtok_r(NULL, delimiters, &save_ptr);
-            if (token!=NULL){
+            if (token != NULL) {
                 arg_struct->output = calloc(strlen(token) + 1, sizeof(char));
                 strcpy(arg_struct->output, token);
                 arg_struct->out = true;
                 token = strtok_r(NULL, delimiters, &save_ptr);
-                if (token ==  NULL){
+                if (token == NULL) {
                     break;
                 }
-            }else {
+            } else {
                 printf("no file provided\n");
                 goto freemem;
             }
         }
         args[index] = token;
         index++;
-    } while (token!=NULL);
+    } while (token != NULL);
     args[index] = NULL;
 
-    if (strcmp(args[index-1],"&") == 0){
+    if (strcmp(args[index - 1], "&") == 0) {
         arg_struct->background = true;
-        args[index-1] = NULL;
+        args[index - 1] = NULL;
     }
-    if (arg_struct->background == true && arg_struct->in == false){
+    if (arg_struct->background == true && arg_struct->in == false) {
         arg_struct->input = calloc(strlen(devnull) + 1, sizeof(char));
         strcpy(arg_struct->input, devnull);
-    }
-    else if (arg_struct->background == true && arg_struct->out == false) {
+    } else if (arg_struct->background == true && arg_struct->out == false) {
         arg_struct->output = calloc(strlen(devnull) + 1, sizeof(char));
         strcpy(arg_struct->output, devnull);
     }
 
-    if (*(args[0]) == '#'){
+    if (*(args[0]) == '#') {
         goto freemem;
     }
 
@@ -182,7 +188,6 @@ void parse_input(char *line, int length) {
                     perror("Couldn't open output file");
                     free(args);
                     free(line);
-                    status = 1;
                     exit(1);
                 }
                 dup2(d_fd, STDOUT_FILENO);
@@ -200,7 +205,7 @@ void parse_input(char *line, int length) {
                 close(s_fd);
             }
             execvp(command, args);
-            perror(command);
+            perror("error()");
             free(args);
             free(line);
             exit(1);
@@ -209,26 +214,31 @@ void parse_input(char *line, int length) {
             status = 1;
             break;
         default:
-            if (arg_struct->background == false) {
+            if (arg_struct->background == false || fg_mode == 0) {
                 waitpid(spawnpid, &status, 0);
-            } else {
-                printf("Background pid is %i\n", spawnpid);
-                break;
             }
-    }
-    while ((spawnpid = waitpid(-1, &status, WNOHANG)) > 0) {
-        printf("child %d terminated - ", spawnpid);
-        return_status(status);
+            else {
+                if (fg_mode == 1) {
+                    printf("Background pid is %i\n", spawnpid);
+                    fflush(stdout);
+                }
+            }
+
+    spawnpid = waitpid(-1, &status, WNOHANG);
+    while(spawnpid > 0) {
+        printf("background process, %i, is done: ", spawnpid);
         fflush(stdout);
+        return_status(status);
+        spawnpid = waitpid(-1, &status, WNOHANG);
+    }
     }
 
     freemem:
     free(args);
     free(arg_struct);
-    fflush(stdout);
 }
 
-char* extract(char* str, int length){
+void extract(char* str, char* buffer_changed, int length){
     char temp_str[length];
     char p_str[length+2];
     int pid = getpid();
@@ -236,7 +246,6 @@ char* extract(char* str, int length){
     int len = sizeof(pid);
     int i = 0;
     char s = '$';
-    char* ret_str = NULL;
 
     while (str[i] != 0) {
         char c = str[i];
@@ -254,11 +263,9 @@ char* extract(char* str, int length){
         i++;
     }
     strncat(temp_str, "\0", 1);
-    ret_str = (char*)malloc(sizeof(ret_str) * sizeof(char*));
-    strcpy(ret_str, temp_str);
-    str=NULL;
+    strcpy(buffer_changed, temp_str);
     memset(&temp_str[0], 0, sizeof(temp_str));
-    return ret_str;
+    return;
 }
 
 void loop() {
@@ -269,10 +276,14 @@ void loop() {
         printf(":");
         fflush(stdout);
         fgets(buffer, 500, stdin);
-        buffer_changed = extract(buffer, buffer_length);
-        parse_input(buffer_changed, buffer_length);
-        fflush(stdout);
         buffer_changed = NULL;
+        if (buffer[0]!='\0'){
+            buffer_changed = malloc(sizeof(buffer) * sizeof(char));
+            extract(buffer, buffer_changed, buffer_length);
+            parse_input(buffer_changed, buffer_length);
+            free(buffer_changed);
+        }
+        memset(&buffer[0], 0, sizeof(buffer));
     }
 }
 
