@@ -15,18 +15,11 @@
 #include <stdbool.h>
 #include <fcntl.h>
 #include <signal.h>
+#include "smallsh.h"
 
-struct arguments {
-    char* input;
-    char* output;
-    bool in;
-    bool out;
-    bool background;
-};
 
-int status = 0; /*global status variable*/
+int status = 0;
 int fg_mode = 1;
-
 
 void return_status(int wstatus) {
     if(WIFEXITED(wstatus)){
@@ -36,7 +29,7 @@ void return_status(int wstatus) {
     }
 }
 
-void catchSIGTSTP(int signo) {
+void signal_SIGTSTP(int signo) {
     if (fg_mode == 1) {
         char* msg = "Entering foreground-only mode (& is now ignored)\n";
         write(STDOUT_FILENO, msg, 49);
@@ -59,11 +52,10 @@ struct arguments* init_struct(){
 
 int change_directories(char** token){
     int ret = 0;
-    if (*token == NULL) {
-        chdir(getenv("HOME"));
-    } else {
+    if (*token == NULL) {chdir(getenv("HOME"));}
+    else {
         int s = chdir(*token);
-        if (s==-1){
+        if (s == -1){
             printf("%s: Directory does not exist\n", *token);
             //status = 1;
             fflush(stdout);
@@ -73,14 +65,23 @@ int change_directories(char** token){
     return ret;
 }
 
-int built_in_comm(char** command){
+int built_in_comm(char** args){
     int ret = 0;
-    if ((strcmp(*command, "status") == 0)) {
+    if ((strcmp(args[0], "status") == 0)) {
         return_status(status);
         ret = 1;
     }
-    else if ((strcmp(*command, "exit") == 0)){
-        ret = 2;
+    else if ((strcmp(args[0], "exit") == 0)){ret = 2;}
+    else if ((strcmp(args[0], "#") == 0)) {ret = 1;}
+    else if (strcmp(args[0], "cd") == 0){ret = 3;}
+    return ret;
+}
+
+int check_background(char** args, int index){
+    int ret = 0;
+    if (strcmp(args[index - 1], "&") == 0) {
+        args[index - 1] = NULL;
+        ret = 1;
     }
     return ret;
 }
@@ -95,27 +96,21 @@ void parse_input(char *line, int length) {
     char *save_ptr = NULL;
     int index = 1;
     pid_t spawnpid;
-    char devnull[] = "/dev/null";
 
-    // Redirect ^Z to catchSIGTSTP()
     struct sigaction sa_sigtstp = {0};
-    sa_sigtstp.sa_handler = catchSIGTSTP;
+    sa_sigtstp.sa_handler = signal_SIGTSTP;
     sigfillset(&sa_sigtstp.sa_mask);
     sa_sigtstp.sa_flags = 0;
     sigaction(SIGTSTP, &sa_sigtstp, NULL);
 
     command = strtok_r(line, delimiters, &save_ptr);
-
-    int comm = built_in_comm(&command);
-    if (comm == 1){goto freemem;}
-    if (comm == 2){exit(0);}
-
-    if ((strcmp(command, "#") == 0)) {
-        goto freemem;
-    }
-
     args[0] = command;
-    if (strcmp(command, "cd") == 0) {
+
+    if (command == NULL){goto freemem;}
+    int comm = built_in_comm(args);
+    if (comm == 1){goto freemem;}
+    else if (comm == 2){exit(0);}
+    else if (comm == 3){
         token = strtok_r(NULL, delimiters, &save_ptr);
         int ch_dir = change_directories(&token);
         if (ch_dir == 1) {
@@ -123,6 +118,7 @@ void parse_input(char *line, int length) {
         }
         goto freemem;
     }
+
     do {
         token = strtok_r(NULL, delimiters, &save_ptr);
         if (token == NULL) {
@@ -163,10 +159,12 @@ void parse_input(char *line, int length) {
     } while (token != NULL);
     args[index] = NULL;
 
-    if (strcmp(args[index - 1], "&") == 0) {
+    if (check_background(args, index) == 1){
         arg_struct->background = true;
-        args[index - 1] = NULL;
     }
+
+    char devnull[] = "/dev/null";
+
     if (arg_struct->background == true && arg_struct->in == false) {
         arg_struct->input = calloc(strlen(devnull) + 1, sizeof(char));
         strcpy(arg_struct->input, devnull);
@@ -216,23 +214,20 @@ void parse_input(char *line, int length) {
         default:
             if (arg_struct->background == false || fg_mode == 0) {
                 waitpid(spawnpid, &status, 0);
-            }
-            else {
+            } else {
                 if (fg_mode == 1) {
                     printf("Background pid is %i\n", spawnpid);
                     fflush(stdout);
                 }
             }
-
-    spawnpid = waitpid(-1, &status, WNOHANG);
-    while(spawnpid > 0) {
-        printf("background process, %i, is done: ", spawnpid);
-        fflush(stdout);
-        return_status(status);
-        spawnpid = waitpid(-1, &status, WNOHANG);
+            spawnpid = waitpid(-1, &status, WNOHANG);
+            while (spawnpid > 0) {
+                printf("background process, %i, is done: ", spawnpid);
+                fflush(stdout);
+                return_status(status);
+                spawnpid = waitpid(-1, &status, WNOHANG);
+            }
     }
-    }
-
     freemem:
     free(args);
     free(arg_struct);
@@ -282,8 +277,8 @@ void loop() {
             extract(buffer, buffer_changed, buffer_length);
             parse_input(buffer_changed, buffer_length);
             free(buffer_changed);
+            memset(&buffer[0], 0, sizeof(buffer));
         }
-        memset(&buffer[0], 0, sizeof(buffer));
     }
 }
 
