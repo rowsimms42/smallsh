@@ -35,13 +35,11 @@ void handle_SIGTSTP(int signo) {
     if (foreground_only_mode == FALSE) {
         char* msg = "entering foreground-only mode (& is now ignored)\n";
         write(STDOUT_FILENO, msg, 49);
-        fflush(stdout);
         foreground_only_mode = TRUE;
     }
     else {
         char* msg = "exiting foreground-only mode\n";
         write (STDOUT_FILENO, msg, 29);
-        fflush(stdout);
         foreground_only_mode = FALSE;
     }
 }
@@ -194,7 +192,7 @@ int built_in_comm(char* str, char** args, char* command){
 
 void expand_variable(const char* str, char* buffer_changed, unsigned int l){
     int pid = getpid();
-    int len = sizeof(pid);
+    int len = sizeof(pid)+1;
     char p_str[len];
     sprintf(p_str, "%d", pid);
     char* ptr = p_str;
@@ -221,6 +219,7 @@ void expand_variable(const char* str, char* buffer_changed, unsigned int l){
 void loop() {
     struct sigaction action_z = {0}; /*sigstp*/
     action_z.sa_handler = handle_SIGTSTP;
+    sigfillset(&action_z.sa_mask);
     action_z.sa_flags = SA_RESTART;
     sigaction(SIGTSTP, &action_z, NULL);
 
@@ -243,6 +242,7 @@ void loop() {
     int parse_ret = 0;
     char devnull[] = "/dev/null";
     pid_t spawnpid = -5;
+
     while (1){
         char input[64] = {'\0'};
         char output[64] = {'\0'};
@@ -327,22 +327,23 @@ void loop() {
                             status = 1;
                             break;
                         default:
-                            if (background == false) {/*foreground_only_mode == TRUE*/
-                                waitpid(spawnpid, &status, 0);
-                                if (WIFSIGNALED(status)){
-                                    return_status(status);
-                                }
-                            } else {
+                            if (background == true && foreground_only_mode == FALSE) {
+                                waitpid(spawnpid, &status, WNOHANG);
                                 printf("background pid is %i\n", spawnpid);
-                                /*spawnpid = waitpid(spawnpid, &status, WNOHANG);*/
                                 fflush(stdout);
                                 int spot = find_available_spot(running_processes);
-                                if (spot>=0){
+                                if (spot >= 0) {
                                     running_processes[spot] = spawnpid;
                                     process_amount++;
-                                }else{
+                                } else {
                                     printf("cannot handle additional background process\n");
                                     fflush(stdout);
+                                }
+                            }
+                            else {
+                                waitpid(spawnpid, &status, 0);
+                                if (WIFSIGNALED(status)) {
+                                    return_status(status);
                                 }
                             }
                     }
