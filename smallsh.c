@@ -16,268 +16,352 @@
 #include <fcntl.h>
 #include <signal.h>
 #include "smallsh.h"
-
+#define FALSE 0
+#define TRUE 1
 
 int status = 0;
-int fg_mode = 1;
+volatile sig_atomic_t foreground_only_mode = FALSE;
 
 void return_status(int wstatus) {
     if(WIFEXITED(wstatus)){
         printf("exit status: %d\n", WEXITSTATUS(wstatus));
     } else{
-        printf("terminated by signal: %d\n", wstatus);
+        printf("terminated by signal: %d\n", WTERMSIG(wstatus));
     }
+    fflush(stdout);
 }
 
-void signal_SIGTSTP(int signo) {
-    if (fg_mode == 1) {
-        char* msg = "Entering foreground-only mode (& is now ignored)\n";
+void handle_SIGTSTP(int signo) {
+    if (foreground_only_mode == FALSE) {
+        char* msg = "entering foreground-only mode (& is now ignored)\n";
         write(STDOUT_FILENO, msg, 49);
-        fg_mode = 0;
+        fflush(stdout);
+        foreground_only_mode = TRUE;
     }
     else {
-        char* msg = "Exiting foreground-only mode\n";
+        char* msg = "exiting foreground-only mode\n";
         write (STDOUT_FILENO, msg, 29);
-        fg_mode = 1;
+        fflush(stdout);
+        foreground_only_mode = FALSE;
     }
 }
 
-struct arguments* init_struct(){
-    struct arguments* curr_arg = malloc(sizeof(struct arguments));
-    curr_arg->in = false;
-    curr_arg->out = false;
-    curr_arg->background = false;
-    return curr_arg;
-}
-
-int change_directories(char** token){
-    int ret = 0;
-    if (*token == NULL) {chdir(getenv("HOME"));}
-    else {
-        int s = chdir(*token);
-        if (s == -1){
-            printf("%s: Directory does not exist\n", *token);
-            //status = 1;
-            fflush(stdout);
-            ret = 1;
-        }
-    }
-    return ret;
-}
-
-int built_in_comm(char** args){
-    int ret = 0;
-    if ((strcmp(args[0], "status") == 0)) {
-        return_status(status);
-        ret = 1;
-    }
-    else if ((strcmp(args[0], "exit") == 0)){ret = 2;}
-    else if ((strcmp(args[0], "#") == 0)) {ret = 1;}
-    else if (strcmp(args[0], "cd") == 0){ret = 3;}
-    return ret;
+void handle_SIGINT(int signo){
+    char* message = "\ncaught sigint\n";
+    write(STDOUT_FILENO, message, 38);
 }
 
 int check_background(char** args, int index){
-    int ret = 0;
+    int r = 0;
     if (strcmp(args[index - 1], "&") == 0) {
-        args[index - 1] = NULL;
-        ret = 1;
+        r= 1;
     }
-    return ret;
+    return r;
 }
 
-void parse_input(char *line, int length) {
+void fill_processes(pid_t *running_processes){
+    int i;
+    for (i=0; i< 100; i++){
+        running_processes[i] = -20;
+    }
+}
+
+int find_available_spot(const pid_t *running_processes){
+    int i;
+    for (i=0; i<100; i++){
+        if (running_processes[i] == -20)
+            return i;
+    }
+    return -1;
+}
+
+void kill_background_processes(pid_t *running_processes, const int *process_amount){
+    int i;
+    for (i=0; i < (*process_amount); i++) {
+        if (running_processes[i] != -20) {
+            kill(running_processes[i], SIGKILL);
+        }
+    }
+}
+
+void check_background_processes(pid_t *running_processes, int *process_amount){
+    pid_t temp_proc_id = -20;
+    int exit_value = -20;
+    int i;
+    for (i=0; i<100; i++){
+        if (running_processes[i] != -20){
+            temp_proc_id = waitpid(running_processes[i], &exit_value, WNOHANG);
+            if (temp_proc_id > 0){
+                printf("background pid %i has completed - ", temp_proc_id);
+                fflush(stdout);
+                running_processes[i] = -20;
+                (*process_amount)--;
+                if(WIFEXITED(exit_value)){
+                    printf("exit status: %d\n", WEXITSTATUS(exit_value));
+                } else{
+                    printf("terminated by signal: %d\n", WTERMSIG(exit_value));
+                }
+                fflush(stdout);
+            }
+        }
+    }
+}
+
+int parse_input(char *line, char *input, char *output, char **args) {
     /*command [arg1 arg2 ...] [< input_file] [> output_file] [&]*/
-    char **args = (char **) malloc(length * sizeof(char *));
-    struct arguments *arg_struct = init_struct();
     const char *delimiters = " \n";
-    char *command = NULL;
     char *token = NULL;
     char *save_ptr = NULL;
+    char *command = NULL;
     int index = 1;
-    pid_t spawnpid;
 
-    struct sigaction sa_sigtstp = {0};
-    sa_sigtstp.sa_handler = signal_SIGTSTP;
-    sigfillset(&sa_sigtstp.sa_mask);
-    sa_sigtstp.sa_flags = 0;
-    sigaction(SIGTSTP, &sa_sigtstp, NULL);
-
-    command = strtok_r(line, delimiters, &save_ptr);
-    args[0] = command;
-
-    if (command == NULL){goto freemem;}
-    int comm = built_in_comm(args);
-    if (comm == 1){goto freemem;}
-    else if (comm == 2){exit(0);}
-    else if (comm == 3){
-        token = strtok_r(NULL, delimiters, &save_ptr);
-        int ch_dir = change_directories(&token);
-        if (ch_dir == 1) {
-            status = 1;
-        }
-        goto freemem;
-    }
+    token = strtok_r(line, delimiters, &save_ptr);
+    args[0] = token;
 
     do {
         token = strtok_r(NULL, delimiters, &save_ptr);
+
         if (token == NULL) {
             break;
         }
         if (strcmp(token, "<") == 0) {
             token = strtok_r(NULL, delimiters, &save_ptr);
             if (token != NULL) {
-                arg_struct->input = calloc(strlen(token) + 1, sizeof(char));
-                strcpy(arg_struct->input, token);
-                arg_struct->in = true;
+                sprintf(input, "%s", token);
                 token = strtok_r(NULL, delimiters, &save_ptr);
                 if (token == NULL) {
                     break;
                 }
             } else {
-                printf("no file provided\n");
-                goto freemem;
+                printf("error - no file provided\n");
+                status = 1;
+                return -1;
             }
         }
         if (strcmp(token, ">") == 0) {
             token = strtok_r(NULL, delimiters, &save_ptr);
             if (token != NULL) {
-                arg_struct->output = calloc(strlen(token) + 1, sizeof(char));
-                strcpy(arg_struct->output, token);
-                arg_struct->out = true;
+                sprintf(output, "%s", token);
                 token = strtok_r(NULL, delimiters, &save_ptr);
                 if (token == NULL) {
                     break;
                 }
             } else {
-                printf("no file provided\n");
-                goto freemem;
+                printf("error - no file provided\n");
+                status = 1;
+                return -1;
             }
         }
         args[index] = token;
         index++;
     } while (token != NULL);
     args[index] = NULL;
-
-    if (check_background(args, index) == 1){
-        arg_struct->background = true;
-    }
-
-    char devnull[] = "/dev/null";
-
-    if (arg_struct->background == true && arg_struct->in == false) {
-        arg_struct->input = calloc(strlen(devnull) + 1, sizeof(char));
-        strcpy(arg_struct->input, devnull);
-    } else if (arg_struct->background == true && arg_struct->out == false) {
-        arg_struct->output = calloc(strlen(devnull) + 1, sizeof(char));
-        strcpy(arg_struct->output, devnull);
-    }
-
-    if (*(args[0]) == '#') {
-        goto freemem;
-    }
-
-    spawnpid = fork();
-    switch (spawnpid) {
-        case 0:
-            if (arg_struct->out == true) { //*output file exists*/
-                int d_fd;
-                if ((d_fd = creat(arg_struct->output, 0644)) < 0) {
-                    perror("Couldn't open output file");
-                    free(args);
-                    free(line);
-                    exit(1);
-                }
-                dup2(d_fd, STDOUT_FILENO);
-                close(d_fd);
-            }
-            if (arg_struct->in == true) {
-                int s_fd;
-                if ((s_fd = open(arg_struct->input, O_RDONLY, 0)) < 0) {
-                    perror("Couldn't open input file");
-                    free(args);
-                    free(line);
-                    exit(1);
-                }
-                dup2(s_fd, STDIN_FILENO);
-                close(s_fd);
-            }
-            execvp(command, args);
-            perror("error()");
-            free(args);
-            free(line);
-            exit(1);
-        case -1:
-            perror("fork()");
-            status = 1;
-            break;
-        default:
-            if (arg_struct->background == false || fg_mode == 0) {
-                waitpid(spawnpid, &status, 0);
-            } else {
-                if (fg_mode == 1) {
-                    printf("Background pid is %i\n", spawnpid);
-                    fflush(stdout);
-                }
-            }
-            spawnpid = waitpid(-1, &status, WNOHANG);
-            while (spawnpid > 0) {
-                printf("background process, %i, is done: ", spawnpid);
-                fflush(stdout);
-                return_status(status);
-                spawnpid = waitpid(-1, &status, WNOHANG);
-            }
-    }
-    freemem:
-    free(args);
-    free(arg_struct);
+    return index;
 }
 
-void extract(char* str, char* buffer_changed, int length){
-    char temp_str[length];
-    char p_str[length+2];
+int built_in_comm(char* str, char** args, char* command){
+    const char *delimiters = " \n";
+    char* save_ptr = NULL;
+    char* token = NULL;
+    command = strtok_r(str, delimiters, &save_ptr);
+    args[0] = command;
+    int ret = 0;
+
+    if (command == NULL || (*(args[0]) == '#')){
+        ret = 1;
+    }
+    else if ((strcmp(args[0], "status") == 0)) {
+        ret = 3;
+    }
+    else if ((strcmp(args[0], "exit") == 0)){
+        ret = 2; /*exit program*/
+    }
+    else if ((strcmp(args[0], "#") == 0)) {
+        ret = 1;
+    }
+    else if (strcmp(args[0], "cd") == 0){
+        token = strtok_r(NULL, delimiters, &save_ptr);
+        if (token == NULL) {
+            chdir(getenv("HOME"));
+        }
+        else {
+            chdir(token);
+        }
+        ret = 1;
+    }
+    return ret;
+}
+
+void expand_variable(const char* str, char* buffer_changed, unsigned int l){
     int pid = getpid();
-    sprintf(p_str, "%d", pid);
     int len = sizeof(pid);
+    char p_str[len];
+    sprintf(p_str, "%d", pid);
+    char* ptr = p_str;
     int i = 0;
-    char s = '$';
 
     while (str[i] != 0) {
         char c = str[i];
         if (str[i] == '$') {
             char d = str[i + 1];
-            if (d == s) {
-                strncat(temp_str, p_str, len);
+            if (d == '$') {
+                strncat(buffer_changed, ptr, len);
                 i++;
             } else {
-                strncat(temp_str, &c, 1);
+                strncat(buffer_changed, &c, 1);
             }
         } else {
-            strncat(temp_str, &c, 1);
+            strncat(buffer_changed, &c, 1);
         }
         i++;
     }
-    strncat(temp_str, "\0", 1);
-    strcpy(buffer_changed, temp_str);
-    memset(&temp_str[0], 0, sizeof(temp_str));
-    return;
+    strncat(buffer_changed, "\0", 1);
 }
 
 void loop() {
+    struct sigaction action_z = {0}; /*sigstp*/
+    action_z.sa_handler = handle_SIGTSTP;
+    action_z.sa_flags = SA_RESTART;
+    sigaction(SIGTSTP, &action_z, NULL);
+
+    struct sigaction action_c = {0}; /*sigint*/
+    /*action_c.sa_handler = handle_SIGINT;*/
+    action_c.sa_handler = SIG_IGN;
+    /*action_c.sa_flags = 0;*/
+    sigfillset(&(action_c.sa_mask));
+    sigaction(SIGINT, &action_c, NULL);
+    char** args = NULL;
     char buffer[500];
-    char* buffer_changed;
+    char* buffer_changed = NULL;
+    char* temp_buff = NULL;
+    /*char** args;*/
     size_t buffer_length = 500;
+    pid_t running_processes[100];
+    fill_processes(running_processes);
+    int process_amount = 0;
+    int comm = 0;
+    int parse_ret = 0;
+    char devnull[] = "/dev/null";
+    pid_t spawnpid = -5;
     while (1){
+        char input[64] = {'\0'};
+        char output[64] = {'\0'};
+        bool background = false;
+        bool in = false;
+        bool out = false;
+        fflush(stdout);
+        char* command = NULL;
+        buffer_changed = NULL;
+        temp_buff = NULL;
+        check_background_processes(running_processes, &process_amount);
         printf(":");
         fflush(stdout);
         fgets(buffer, 500, stdin);
-        buffer_changed = NULL;
+        comm = -1;
         if (buffer[0]!='\0'){
-            buffer_changed = malloc(sizeof(buffer) * sizeof(char));
-            extract(buffer, buffer_changed, buffer_length);
-            parse_input(buffer_changed, buffer_length);
+            args = (char **) malloc(500 * sizeof(char*));
+            buffer_changed = (char*)calloc(500, sizeof(char));
+            buffer_length = 500;
+            expand_variable(buffer, buffer_changed, buffer_length);
+            temp_buff = (char*)calloc(500, sizeof(char));
+            strcpy(temp_buff, buffer_changed);
+            comm = built_in_comm(temp_buff, args, command);
+            if (comm == 3) {
+                return_status(status);
+                fflush(stdout);
+            }
+            else if (comm == 0) {
+                parse_ret = parse_input(buffer_changed, input, output, args);
+                if (parse_ret != -1){
+                    command = args[0];
+                    int index = parse_ret;
+
+                    if (check_background(args, index) == 1){
+                        args[index - 1] = NULL;
+                        background = true;
+                    }
+
+                    if(input[0]!='\0'){in = true;}
+                    if(output[0]!='\0'){out = true;}
+
+                    if (background == true && in == false) {
+                        strcpy(input, devnull);
+                    } else if (background == true && out == false) {
+                        strcpy(output, devnull);
+                    }
+
+                    spawnpid = fork();
+                    switch (spawnpid) {
+                        case 0:
+                            if (out == true) { /*output file exists*/
+                                int d_fd;
+                                if ((d_fd = creat(output, 0644)) < 0) {
+                                    perror("Can't open output file");
+                                    exit(1);
+                                }
+                                dup2(d_fd, STDOUT_FILENO);
+                                close(d_fd);
+                            }
+                            if (in == true) {
+                                int s_fd;
+                                if ((s_fd = open(input, O_RDONLY, 0)) < 0) {
+                                    perror("Can't open input file");
+                                    exit(1);
+                                }
+                                dup2(s_fd, STDIN_FILENO);
+                                close(s_fd);
+                            }
+                            if(background == false){
+                                action_c.sa_handler = SIG_DFL;
+                                sigaction(SIGINT, &action_c, NULL);
+                            }
+                            action_z.sa_handler = SIG_IGN;
+                            sigaction(SIGTSTP, &action_z, NULL);
+
+                            execvp(command, args);
+                            perror("error");
+                            status = 1;
+                            exit(1);
+                        case -1:
+                            perror("fork error");
+                            status = 1;
+                            break;
+                        default:
+                            if (background == false) {/*foreground_only_mode == TRUE*/
+                                waitpid(spawnpid, &status, 0);
+                                if (WIFSIGNALED(status)){
+                                    return_status(status);
+                                }
+                            } else {
+                                printf("background pid is %i\n", spawnpid);
+                                /*spawnpid = waitpid(spawnpid, &status, WNOHANG);*/
+                                fflush(stdout);
+                                int spot = find_available_spot(running_processes);
+                                if (spot>=0){
+                                    running_processes[spot] = spawnpid;
+                                    process_amount++;
+                                }else{
+                                    printf("cannot handle additional background process\n");
+                                    fflush(stdout);
+                                }
+                            }
+                    }
+
+                }
+                memset(&input[0], 0, sizeof(input));
+                memset(&output[0], 0, sizeof(output));
+            }
             free(buffer_changed);
+            free(temp_buff);
+            free(args);
             memset(&buffer[0], 0, sizeof(buffer));
+            fflush(stdout);
+            if (comm == 2) {
+                kill_background_processes(running_processes, &process_amount);
+                /*check_background_processes(running_processes, &process_amount);*/
+                /*exit(0);*/
+                return;
+            }
         }
     }
 }
