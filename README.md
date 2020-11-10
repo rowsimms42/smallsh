@@ -20,7 +20,7 @@ It does the following:
 -Implements custom handlers for 2 signals, SIGINT and SIGTSTP
 
 
-To run and compile: 
+To compile and run: 
 
 gcc -std=gnu99 -o smallsh smallsh.c
 
