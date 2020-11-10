@@ -18,3 +18,10 @@ It does the following:
 -Supports running commands in foreground and background processes
 
 -Implements custom handlers for 2 signals, SIGINT and SIGTSTP
+
+
+To run and compile: 
+
+gcc -std=gnu99 -o smallsh smallsh.c
+
+./smallsh
